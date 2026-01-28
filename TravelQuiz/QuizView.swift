@@ -5,22 +5,34 @@
 //  Created by Alberto Estrada on 28/01/26.
 //
 
-
 import SwiftUI
 
 struct QuizView: View {
     @EnvironmentObject var viewModel: QuizViewModel
     @Environment(\.dismiss) var dismiss
     
-    @State private var currentQuestionIndex = 0
     @State private var selectedChoice: Choice?
     @State private var showResult = false
     @State private var timeRemaining = 20
     @State private var timer: Timer?
+    @State private var answerStartTime: Date?
+    @State private var earnedPoints: Int = 0
+    
+    var currentQuestionIndex: Int {
+        viewModel.currentRoom?.current_question_index ?? 0
+    }
     
     var currentQuestion: Question? {
         guard currentQuestionIndex < viewModel.questions.count else { return nil }
         return viewModel.questions[currentQuestionIndex]
+    }
+    
+    var isHost: Bool {
+        viewModel.currentPlayer?.is_host ?? false
+    }
+    
+    var allPlayersAnswered: Bool {
+        viewModel.players.allSatisfy { $0.has_answered == true }
     }
     
     var body: some View {
@@ -32,18 +44,31 @@ struct QuizView: View {
             )
             .ignoresSafeArea()
             
-            if let question = currentQuestion {
+            if viewModel.currentRoom?.status == "finished" || currentQuestion == nil {
+                // Show leaderboard
+                LeaderboardView()
+                    .environmentObject(viewModel)
+                    .onAppear {
+                        timer?.invalidate()
+                    }
+            } else if let question = currentQuestion {
                 VStack(spacing: 24) {
                     // Progress bar
                     HStack(spacing: 8) {
                         ForEach(0..<viewModel.questions.count, id: \.self) { index in
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(index <= currentQuestionIndex ? Color.blue : Color.gray.opacity(0.3))
+                                .fill(index < currentQuestionIndex ? Color.green :
+                                      index == currentQuestionIndex ? Color.blue : Color.gray.opacity(0.3))
                                 .frame(height: 6)
                         }
                     }
                     .padding(.horizontal)
                     .padding(.top)
+                    
+                    // Question counter
+                    Text("Question \(currentQuestionIndex + 1) of \(viewModel.questions.count)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     
                     // Timer
                     ZStack {
@@ -83,9 +108,9 @@ struct QuizView: View {
                                 isSelected: selectedChoice?.id == choice.id,
                                 showResult: showResult
                             ) {
-                                if !showResult {
+                                if !showResult && answerStartTime != nil {
                                     selectedChoice = choice
-                                    checkAnswer()
+                                    submitAnswer(choice: choice)
                                 }
                             }
                         }
@@ -94,12 +119,52 @@ struct QuizView: View {
                     
                     Spacer()
                     
-                    // Next button
+                    // Result feedback
                     if showResult {
+                        VStack(spacing: 12) {
+                            if selectedChoice?.is_correct == true {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Correct! +\(earnedPoints) points")
+                                        .font(.headline)
+                                }
+                                .padding()
+                                .background(Color.green.opacity(0.2))
+                                .cornerRadius(12)
+                            } else {
+                                HStack {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.red)
+                                    Text(selectedChoice == nil ? "Time's up!" : "Incorrect")
+                                        .font(.headline)
+                                }
+                                .padding()
+                                .background(Color.red.opacity(0.2))
+                                .cornerRadius(12)
+                            }
+                            
+                            // Waiting message
+                            if !allPlayersAnswered {
+                                HStack {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                    Text("Waiting for other players...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.top, 8)
+                            }
+                        }
+                        .padding(.bottom, 20)
+                    }
+                    
+                    // Next button (host only, when all answered or time up)
+                    if isHost && (allPlayersAnswered || timeRemaining == 0) {
                         Button {
-                            nextQuestion()
+                            advanceToNextQuestion()
                         } label: {
-                            Text(currentQuestionIndex < viewModel.questions.count - 1 ? "Next Question" : "Finish")
+                            Text(currentQuestionIndex < viewModel.questions.count - 1 ? "Next Question" : "Finish Quiz")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
                                 .padding()
@@ -111,39 +176,27 @@ struct QuizView: View {
                         .padding(.bottom, 20)
                     }
                 }
-            } else {
-                // Quiz finished
-                VStack(spacing: 24) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 80))
-                        .foregroundColor(.green)
-                    
-                    Text("Quiz Complete!")
-                        .font(.largeTitle.bold())
-                    
-                    Button("Back to Home") {
-                        viewModel.leaveRoom()
-                        dismiss()
-                    }
-                    .font(.headline)
-                    .padding(.horizontal, 40)
-                    .padding(.vertical, 16)
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(16)
-                }
             }
         }
         .navigationBarBackButtonHidden(true)
+        .onChange(of: currentQuestionIndex) { oldValue, newValue in
+            if oldValue != newValue {
+                resetForNewQuestion()
+            }
+        }
         .onAppear {
-            startTimer()
+            resetForNewQuestion()
         }
         .onDisappear {
             timer?.invalidate()
         }
     }
     
-    func startTimer() {
+    func resetForNewQuestion() {
+        selectedChoice = nil
+        showResult = false
+        answerStartTime = Date()
+        
         guard let question = currentQuestion else { return }
         timeRemaining = question.time_limit_sec
         
@@ -155,33 +208,63 @@ struct QuizView: View {
                 // Time's up
                 timer?.invalidate()
                 if !showResult {
-                    checkAnswer()
+                    // Auto-submit with no answer
+                    autoSubmitOnTimeout()
                 }
             }
         }
     }
     
-    func checkAnswer() {
-        showResult = true
-        timer?.invalidate()
+    func submitAnswer(choice: Choice) {
+        guard let startTime = answerStartTime,
+              let question = currentQuestion else { return }
         
-        // Add haptic feedback
-        if selectedChoice?.is_correct == true {
-            let generator = UINotificationFeedbackGenerator()
-            generator.notificationOccurred(.success)
-        } else {
-            let generator = UINotificationFeedbackGenerator()
-            generator.notificationOccurred(.error)
+        let answerTime = Date().timeIntervalSince(startTime)
+        
+        Task {
+            if let result = await viewModel.submitAnswer(
+                questionId: question.id,
+                choiceId: choice.id,
+                answerTime: answerTime
+            ) {
+                showResult = true
+                earnedPoints = result.points
+                timer?.invalidate()
+                
+                // Haptic feedback
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(result.isCorrect ? .success : .error)
+            }
         }
     }
     
-    func nextQuestion() {
-        currentQuestionIndex += 1
-        selectedChoice = nil
-        showResult = false
+    func autoSubmitOnTimeout() {
+        guard let question = currentQuestion else { return }
         
-        if currentQuestion != nil {
-            startTimer()
+        // Submit with first choice (will be marked incorrect)
+        if let firstChoice = question.choices.first {
+            Task {
+                let _ = await viewModel.submitAnswer(
+                    questionId: question.id,
+                    choiceId: firstChoice.id,
+                    answerTime: Double(question.time_limit_sec)
+                )
+                showResult = true
+                earnedPoints = 0
+            }
+        }
+    }
+    
+    func advanceToNextQuestion() {
+        if currentQuestionIndex < viewModel.questions.count - 1 {
+            Task {
+                await viewModel.nextQuestion()
+            }
+        } else {
+            // Finish quiz
+            Task {
+                await viewModel.finishQuiz()
+            }
         }
     }
 }

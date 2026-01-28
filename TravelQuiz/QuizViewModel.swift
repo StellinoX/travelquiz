@@ -68,6 +68,8 @@ class QuizViewModel: ObservableObject {
                 return nil
             }
             
+            print("✅ Room created: \(result.room_id), PIN: \(result.pin)")
+            
             // Fetch the created room
             let rooms: [Room] = try await supabase
                 .from("rooms")
@@ -100,11 +102,13 @@ class QuizViewModel: ObservableObject {
         errorMessage = nil
         
         do {
+            let params: [String: AnyJSON] = [
+                "p_pin": try AnyJSON(pin),
+                "p_player_name": try AnyJSON(playerName)
+            ]
+            
             let response: [JoinRoomResponse] = try await supabase
-                .rpc("join_room", params: [
-                    "p_pin": pin,
-                    "p_player_name": playerName
-                ])
+                .rpc("join_room", params: params)
                 .execute()
                 .value
             
@@ -113,6 +117,8 @@ class QuizViewModel: ObservableObject {
                 isLoading = false
                 return false
             }
+            
+            print("✅ Joined room: \(result.room_id)")
             
             // Fetch room details
             let rooms: [Room] = try await supabase
@@ -169,9 +175,29 @@ class QuizViewModel: ObservableObject {
                 .execute()
                 .value
             
+            print("👥 Fetched \(response.count) players")
             players = response
         } catch {
-            print("Error fetching players: \(error)")
+            print("❌ Error fetching players: \(error)")
+        }
+    }
+    
+    // MARK: - Check Room Status (for polling)
+    func checkRoomStatus(roomId: Int) async {
+        do {
+            let rooms: [Room] = try await supabase
+                .from("rooms")
+                .select()
+                .eq("id", value: roomId)
+                .execute()
+                .value
+            
+            if let room = rooms.first, room.status != currentRoom?.status {
+                print("🔄 Room status updated to: \(room.status)")
+                currentRoom = room
+            }
+        } catch {
+            print("❌ Error checking room status: \(error)")
         }
     }
     
@@ -180,14 +206,20 @@ class QuizViewModel: ObservableObject {
         guard let roomId = currentRoom?.id else { return }
         
         do {
+            let updateData: [String: AnyJSON] = [
+                "status": try AnyJSON("active")
+            ]
+            
             try await supabase
                 .from("rooms")
-                .update(["status": "active"])
+                .update(updateData)
                 .eq("id", value: roomId)
                 .execute()
             
+            print("✅ Quiz started for room: \(roomId)")
+            
             // Update local room status
-            if var room = currentRoom {
+            if let room = currentRoom {
                 currentRoom = Room(
                     id: room.id,
                     pin: room.pin,
@@ -214,6 +246,7 @@ class QuizViewModel: ObservableObject {
                 .execute()
                 .value
             
+            print("❓ Fetched \(response.count) questions")
             questions = response
             isLoading = false
         } catch {
@@ -224,6 +257,8 @@ class QuizViewModel: ObservableObject {
     
     // MARK: - Realtime Subscription
     func subscribeToRoom(roomId: Int) {
+        print("🔌 Subscribing to room: \(roomId)")
+        
         // Remove existing subscription
         if let channel = realtimeChannel {
             Task {
@@ -234,12 +269,13 @@ class QuizViewModel: ObservableObject {
         let channel = supabase.channel("room-\(roomId)")
         
         // Subscribe to players changes
-        let playersChanges = channel.onPostgresChange(
+        channel.onPostgresChange(
             AnyAction.self,
             schema: "public",
             table: "players",
             filter: "room_id=eq.\(roomId)"
-        ) { [weak self] _ in
+        ) { [weak self] payload in
+            print("👥 Players table changed: \(payload)")
             guard let self = self else { return }
             Task { @MainActor in
                 await self.fetchPlayers(roomId: roomId)
@@ -247,25 +283,17 @@ class QuizViewModel: ObservableObject {
         }
         
         // Subscribe to room status changes
-        let roomChanges = channel.onPostgresChange(
+        channel.onPostgresChange(
             UpdateAction.self,
             schema: "public",
             table: "rooms",
             filter: "id=eq.\(roomId)"
         ) { [weak self] action in
+            print("🏠 Room table changed: \(action)")
             guard let self = self else { return }
             Task { @MainActor in
-                if let statusString = action.record["status"] as? String {
-                    if var room = self.currentRoom {
-                        self.currentRoom = Room(
-                            id: room.id,
-                            pin: room.pin,
-                            subtopic_id: room.subtopic_id,
-                            status: statusString,
-                            created_at: room.created_at
-                        )
-                    }
-                }
+                // Fetch the updated room
+                await self.checkRoomStatus(roomId: roomId)
             }
         }
         
@@ -273,6 +301,7 @@ class QuizViewModel: ObservableObject {
         
         Task {
             await channel.subscribe()
+            print("✅ Subscribed to room: \(roomId)")
         }
     }
     

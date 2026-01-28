@@ -6,7 +6,6 @@
 //
 
 
-
 import SwiftUI
 
 struct WaitingRoomView: View {
@@ -16,6 +15,7 @@ struct WaitingRoomView: View {
     let isHost: Bool
     @State private var showStartConfirmation = false
     @State private var navigateToQuiz = false
+    @State private var pollingTimer: Timer?
     
     var body: some View {
         ZStack {
@@ -68,9 +68,11 @@ struct WaitingRoomView: View {
                         VStack(spacing: 12) {
                             ForEach(viewModel.players) { player in
                                 PlayerRow(player: player)
+                                    .transition(.scale.combined(with: .opacity))
                             }
                         }
                         .padding(.horizontal)
+                        .animation(.spring(), value: viewModel.players.count)
                     }
                 }
                 
@@ -102,6 +104,7 @@ struct WaitingRoomView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 Button {
+                    pollingTimer?.invalidate()
                     viewModel.leaveRoom()
                     dismiss()
                 } label: {
@@ -130,18 +133,47 @@ struct WaitingRoomView: View {
             QuizView()
                 .environmentObject(viewModel)
         }
-        .onChange(of: viewModel.currentRoom?.status) { newValue in
+        .onChange(of: viewModel.currentRoom?.status) { oldValue, newValue in
+            print("🔄 Room status changed from \(oldValue ?? "nil") to \(newValue ?? "nil")")
             if newValue == "active" {
+                pollingTimer?.invalidate()
+                
                 // Load questions if not already loaded
                 if viewModel.questions.isEmpty, let subtopicId = viewModel.currentRoom?.subtopic_id {
                     Task {
                         await viewModel.fetchQuestions(subtopicId: subtopicId)
+                        // Small delay to ensure questions are loaded
+                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
                         navigateToQuiz = true
                     }
                 } else {
                     navigateToQuiz = true
                 }
             }
+        }
+        .task {
+            // Initial fetch of players when view appears
+            if let roomId = viewModel.currentRoom?.id {
+                await viewModel.fetchPlayers(roomId: roomId)
+            }
+        }
+        .onAppear {
+            // Start polling for players and room status (backup if realtime fails)
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
+                if viewModel.currentRoom?.status != "active" {
+                    Task {
+                        if let roomId = viewModel.currentRoom?.id {
+                            await viewModel.fetchPlayers(roomId: roomId)
+                            await viewModel.checkRoomStatus(roomId: roomId)
+                        }
+                    }
+                } else {
+                    timer.invalidate()
+                }
+            }
+        }
+        .onDisappear {
+            pollingTimer?.invalidate()
         }
     }
 }

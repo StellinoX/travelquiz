@@ -32,7 +32,10 @@ struct QuizView: View {
     }
     
     var allPlayersAnswered: Bool {
-        viewModel.players.allSatisfy { $0.has_answered == true }
+        let answered = viewModel.players.allSatisfy { $0.has_answered == true }
+        let statuses = viewModel.players.map { "\($0.name): \($0.has_answered ?? false)" }
+        print("🎯 Players answered status: \(statuses), all answered: \(answered)")
+        return answered
     }
     
     var body: some View {
@@ -184,11 +187,44 @@ struct QuizView: View {
                 resetForNewQuestion()
             }
         }
+        .onChange(of: allPlayersAnswered) { oldValue, newValue in
+            // Auto-advance after all players answered (host only, with delay)
+            if newValue && isHost && showResult {
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second delay
+                    if allPlayersAnswered { // Re-check after delay
+                        advanceToNextQuestion()
+                    }
+                }
+            }
+        }
         .onAppear {
             resetForNewQuestion()
+            startPlayerPolling()
         }
         .onDisappear {
             timer?.invalidate()
+            playerPollingTimer?.invalidate()
+        }
+    }
+    
+    @State private var playerPollingTimer: Timer?
+    
+    private func startPlayerPolling() {
+        playerPollingTimer?.invalidate()
+        
+        // Poll players every 1.5 seconds to check if everyone answered
+        playerPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
+            Task { @MainActor in
+                if let roomId = viewModel.currentRoom?.id {
+                    await viewModel.fetchPlayers(roomId: roomId)
+                    await viewModel.checkRoomStatus(roomId: roomId)
+                }
+            }
+        }
+        
+        if let timer = playerPollingTimer {
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
     

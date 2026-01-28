@@ -159,21 +159,36 @@ struct WaitingRoomView: View {
         }
         .onAppear {
             // Start polling for players and room status (backup if realtime fails)
-            pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
-                if viewModel.currentRoom?.status != "active" {
-                    Task {
-                        if let roomId = viewModel.currentRoom?.id {
-                            await viewModel.fetchPlayers(roomId: roomId)
-                            await viewModel.checkRoomStatus(roomId: roomId)
-                        }
-                    }
-                } else {
-                    timer.invalidate()
-                }
-            }
+            startPolling()
         }
         .onDisappear {
             pollingTimer?.invalidate()
+            pollingTimer = nil
+        }
+    }
+    
+    private func startPolling() {
+        guard pollingTimer == nil else { return }
+        
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [self] timer in
+            guard viewModel.currentRoom?.status != "active" else {
+                timer.invalidate()
+                pollingTimer = nil
+                return
+            }
+            
+            Task { @MainActor in
+                if let roomId = viewModel.currentRoom?.id {
+                    print("🔄 Polling for updates...")
+                    await viewModel.fetchPlayers(roomId: roomId)
+                    await viewModel.checkRoomStatus(roomId: roomId)
+                }
+            }
+        }
+        
+        // Ensure timer runs on main run loop
+        if let timer = pollingTimer {
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
 }

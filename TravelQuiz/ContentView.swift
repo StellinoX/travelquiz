@@ -100,6 +100,14 @@ struct ContentView: View {
                 JoinRoomView()
                     .environmentObject(viewModel)
             }
+            .onChange(of: viewModel.shouldNavigateToHome) { oldValue, newValue in
+                if newValue {
+                    // Reset navigation to go back to home
+                    navigateToHost = false
+                    navigateToJoin = false
+                    viewModel.shouldNavigateToHome = false
+                }
+            }
         }
     }
 }

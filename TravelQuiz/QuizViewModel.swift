@@ -22,6 +22,7 @@ class QuizViewModel: ObservableObject {
     
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var shouldNavigateToHome = false  // Triggers navigation back to home
     
     private var realtimeChannel: RealtimeChannelV2?
     
@@ -84,6 +85,12 @@ class QuizViewModel: ObservableObject {
             
             // Fetch initial players
             await fetchPlayers(roomId: result.room_id)
+            
+            // Set currentPlayer for host
+            if let hostPlayer = players.first(where: { $0.is_host }) {
+                currentPlayer = hostPlayer
+                print("👑 Host player set: \(hostPlayer.name)")
+            }
             
             isLoading = false
             return result.pin

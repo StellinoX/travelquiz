@@ -64,12 +64,7 @@ struct LeaderboardView: View {
                 // Back to home button
                 Button {
                     viewModel.leaveRoom()
-                    // Dismiss all the way to root
-                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let window = windowScene.windows.first,
-                       let rootVC = window.rootViewController {
-                        rootVC.dismiss(animated: true)
-                    }
+                    viewModel.shouldNavigateToHome = true
                 } label: {
                     HStack {
                         Image(systemName: "house.fill")

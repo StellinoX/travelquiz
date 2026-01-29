@@ -360,13 +360,16 @@ class QuizViewModel: ObservableObject {
     func getLeaderboard() -> [LeaderboardEntry] {
         let sortedPlayers = players.sorted { $0.score > $1.score }
         
+        let colors = ["blue", "purple", "green", "orange", "pink", "red", "yellow", "cyan"]
+        
         return sortedPlayers.enumerated().map { index, player in
             LeaderboardEntry(
                 id: player.id,
                 playerName: player.name,
                 score: player.score,
                 rank: index + 1,
-                isCurrentUser: player.id == currentPlayer?.id
+                isCurrentUser: player.id == currentPlayer?.id,
+                avatarColor: colors[index % colors.count]
             )
         }
     }

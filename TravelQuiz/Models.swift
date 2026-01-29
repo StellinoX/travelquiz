@@ -5,7 +5,6 @@
 //  Created by Alberto Estrada on 28/01/26.
 //
 
-
 import Foundation
 
 // MARK: - Topic (City)
@@ -29,7 +28,7 @@ struct Room: Codable, Identifiable {
     let pin: String
     let subtopic_id: Int
     let status: String
-    let current_question_index: Int? // NEW: Para sincronización
+    let current_question_index: Int?
     let created_at: String?
 }
 
@@ -40,8 +39,8 @@ struct Player: Codable, Identifiable {
     let name: String
     let score: Int
     let is_host: Bool
-    let has_answered: Bool? // NEW: Para tracking
-    let answer_time: Double? // NEW: Tiempo de respuesta
+    let has_answered: Bool?
+    let answer_time: Double?
     let created_at: String?
 }
 
@@ -62,7 +61,7 @@ struct Choice: Codable, Identifiable {
     let is_correct: Bool
 }
 
-// MARK: - Answer Record (NEW)
+// MARK: - Answer Record
 struct AnswerRecord: Codable, Identifiable {
     let id: Int?
     let room_id: Int
@@ -70,7 +69,7 @@ struct AnswerRecord: Codable, Identifiable {
     let question_id: Int
     let choice_id: Int
     let is_correct: Bool
-    let answer_time: Double // Tiempo que tardó en responder
+    let answer_time: Double
     let points_earned: Int
     let created_at: String?
 }
@@ -91,11 +90,16 @@ struct JoinRoomResponse: Codable {
     let room_status: String
 }
 
-// MARK: - Leaderboard Entry (NEW)
-struct LeaderboardEntry: Identifiable {
+// MARK: - Leaderboard Entry
+struct LeaderboardEntry: Identifiable, Equatable {
     let id: Int
     let playerName: String
     let score: Int
     let rank: Int
     let isCurrentUser: Bool
+    let avatarColor: String // NEW: Color for avatar
+    
+    static func == (lhs: LeaderboardEntry, rhs: LeaderboardEntry) -> Bool {
+        lhs.id == rhs.id && lhs.score == rhs.score && lhs.rank == rhs.rank
+    }
 }

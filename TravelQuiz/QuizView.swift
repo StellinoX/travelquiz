@@ -17,6 +17,8 @@ struct QuizView: View {
     @State private var timer: Timer?
     @State private var answerStartTime: Date?
     @State private var earnedPoints: Int = 0
+    @State private var showIntermediateRanking = false
+    @State private var hasAdvanced = false
     
     var currentQuestionIndex: Int {
         viewModel.currentRoom?.current_question_index ?? 0
@@ -31,11 +33,18 @@ struct QuizView: View {
         viewModel.currentPlayer?.is_host ?? false
     }
     
+    var answeredPlayers: [Player] {
+        viewModel.players.filter { $0.has_answered == true }
+    }
+    
     var allPlayersAnswered: Bool {
-        let answered = viewModel.players.allSatisfy { $0.has_answered == true }
-        let statuses = viewModel.players.map { "\($0.name): \($0.has_answered ?? false)" }
-        print("🎯 Players answered status: \(statuses), all answered: \(answered)")
-        return answered
+        let totalPlayers = viewModel.players.count
+        let answeredCount = answeredPlayers.count
+        return totalPlayers > 0 && answeredCount == totalPlayers
+    }
+    
+    var isLastQuestion: Bool {
+        currentQuestionIndex >= viewModel.questions.count - 1
     }
     
     var body: some View {
@@ -47,13 +56,20 @@ struct QuizView: View {
             )
             .ignoresSafeArea()
             
-            if viewModel.currentRoom?.status == "finished" || currentQuestion == nil {
-                // Show leaderboard
+            if viewModel.currentRoom?.status == "finished" {
+                // Show final leaderboard
                 LeaderboardView()
                     .environmentObject(viewModel)
                     .onAppear {
                         timer?.invalidate()
+                        playerPollingTimer?.invalidate()
                     }
+            } else if showIntermediateRanking {
+                // Show intermediate ranking (NOT on last question)
+                IntermediateRankingView(
+                    leaderboard: viewModel.getLeaderboard()
+                )
+                .transition(.opacity)
             } else if let question = currentQuestion {
                 VStack(spacing: 24) {
                     // Progress bar
@@ -74,57 +90,49 @@ struct QuizView: View {
                         .foregroundColor(.secondary)
                     
                     // Timer
-                    ZStack {
-                        Circle()
-                            .stroke(Color.gray.opacity(0.2), lineWidth: 8)
-                            .frame(width: 80, height: 80)
-                        
-                        Circle()
-                            .trim(from: 0, to: CGFloat(timeRemaining) / CGFloat(question.time_limit_sec))
-                            .stroke(
-                                timeRemaining > 5 ? Color.green : Color.red,
-                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                            )
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(.degrees(-90))
-                            .animation(.linear(duration: 1), value: timeRemaining)
-                        
-                        Text("\(timeRemaining)")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                    }
+                    TimerCircle(
+                        timeRemaining: timeRemaining,
+                        totalTime: question.time_limit_sec
+                    )
                     .padding(.top, 20)
                     
                     // Question
-                    Text(question.prompt)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                        .padding(.top, 20)
+                    ScrollView {
+                        Text(question.prompt)
+                            .font(.title3.bold())
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxHeight: 100)
+                    .padding(.top, 20)
                     
                     Spacer()
                     
                     // Choices
-                    VStack(spacing: 16) {
-                        ForEach(question.choices) { choice in
-                            ChoiceButton(
-                                choice: choice,
-                                isSelected: selectedChoice?.id == choice.id,
-                                showResult: showResult
-                            ) {
-                                if !showResult && answerStartTime != nil {
-                                    selectedChoice = choice
-                                    submitAnswer(choice: choice)
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            ForEach(question.choices) { choice in
+                                ChoiceButton(
+                                    choice: choice,
+                                    isSelected: selectedChoice?.id == choice.id,
+                                    showResult: showResult
+                                ) {
+                                    if !showResult && answerStartTime != nil {
+                                        selectedChoice = choice
+                                        submitAnswer(choice: choice)
+                                    }
                                 }
                             }
                         }
+                        .padding(.horizontal)
                     }
-                    .padding(.horizontal)
                     
                     Spacer()
                     
-                    // Result feedback
-                    if showResult {
-                        VStack(spacing: 12) {
+                    // Result feedback + Player bubbles
+                    VStack(spacing: 16) {
+                        if showResult {
                             if selectedChoice?.is_correct == true {
                                 HStack {
                                     Image(systemName: "checkmark.circle.fill")
@@ -146,39 +154,18 @@ struct QuizView: View {
                                 .background(Color.red.opacity(0.2))
                                 .cornerRadius(12)
                             }
-                            
-                            // Waiting message
-                            if !allPlayersAnswered {
-                                HStack {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("Waiting for other players...")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
+                        }
+                        
+                        // Player answer bubbles
+                        if !answeredPlayers.isEmpty {
+                            PlayerAnswerBubbles(players: answeredPlayers)
                                 .padding(.top, 8)
-                            }
                         }
-                        .padding(.bottom, 20)
                     }
-                    
-                    // Next button (host only, when all answered or time up)
-                    if isHost && (allPlayersAnswered || timeRemaining == 0) {
-                        Button {
-                            advanceToNextQuestion()
-                        } label: {
-                            Text(currentQuestionIndex < viewModel.questions.count - 1 ? "Next Question" : "Finish Quiz")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .foregroundColor(.white)
-                                .cornerRadius(16)
-                        }
-                        .padding(.horizontal)
-                        .padding(.bottom, 20)
-                    }
+                    .padding(.bottom, 20)
                 }
+                .transition(.opacity)
+                .id("question-\(currentQuestionIndex)") // Force view refresh
             }
         }
         .navigationBarBackButtonHidden(true)
@@ -187,15 +174,15 @@ struct QuizView: View {
                 resetForNewQuestion()
             }
         }
+        .onChange(of: timeRemaining) { oldValue, newValue in
+            if newValue == 0 && oldValue == 1 && !hasAdvanced {
+                handleTimeUp()
+            }
+        }
         .onChange(of: allPlayersAnswered) { oldValue, newValue in
-            // Auto-advance after all players answered (host only, with delay)
-            if newValue && isHost && showResult {
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second delay
-                    if allPlayersAnswered { // Re-check after delay
-                        advanceToNextQuestion()
-                    }
-                }
+            if newValue && !oldValue && !hasAdvanced {
+                print("✅ All players answered! Advancing...")
+                handleAllPlayersAnswered()
             }
         }
         .onAppear {
@@ -213,8 +200,7 @@ struct QuizView: View {
     private func startPlayerPolling() {
         playerPollingTimer?.invalidate()
         
-        // Poll players every 1.5 seconds to check if everyone answered
-        playerPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
+        playerPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             Task { @MainActor in
                 if let roomId = viewModel.currentRoom?.id {
                     await viewModel.fetchPlayers(roomId: roomId)
@@ -232,6 +218,7 @@ struct QuizView: View {
         selectedChoice = nil
         showResult = false
         answerStartTime = Date()
+        hasAdvanced = false
         
         guard let question = currentQuestion else { return }
         timeRemaining = question.time_limit_sec
@@ -241,12 +228,7 @@ struct QuizView: View {
             if timeRemaining > 0 {
                 timeRemaining -= 1
             } else {
-                // Time's up
                 timer?.invalidate()
-                if !showResult {
-                    // Auto-submit with no answer
-                    autoSubmitOnTimeout()
-                }
             }
         }
     }
@@ -265,7 +247,6 @@ struct QuizView: View {
             ) {
                 showResult = true
                 earnedPoints = result.points
-                timer?.invalidate()
                 
                 // Haptic feedback
                 let generator = UINotificationFeedbackGenerator()
@@ -274,11 +255,58 @@ struct QuizView: View {
         }
     }
     
-    func autoSubmitOnTimeout() {
-        guard let question = currentQuestion else { return }
+    func handleAllPlayersAnswered() {
+        guard !hasAdvanced else { return }
+        hasAdvanced = true
         
-        // Submit with first choice (will be marked incorrect)
-        if let firstChoice = question.choices.first {
+        timer?.invalidate()
+        
+        if !showResult {
+            guard let question = currentQuestion,
+                  let firstChoice = question.choices.first else { return }
+            
+            Task {
+                let _ = await viewModel.submitAnswer(
+                    questionId: question.id,
+                    choiceId: firstChoice.id,
+                    answerTime: Double(question.time_limit_sec) - Double(timeRemaining)
+                )
+                showResult = true
+                earnedPoints = 0
+            }
+        }
+        
+        Task {
+            // Espera 1.5 segundos
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            
+            // Si NO es la última pregunta, muestra ranking
+            if !isLastQuestion {
+                showIntermediateRanking = true
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 segundos de ranking
+            }
+            
+            // Avanza (host actualiza DB)
+            if isHost {
+                if !isLastQuestion {
+                    await viewModel.nextQuestion()
+                } else {
+                    await viewModel.finishQuiz()
+                }
+            }
+            
+            showIntermediateRanking = false
+        }
+    }
+    
+    func handleTimeUp() {
+        guard !hasAdvanced else { return }
+        hasAdvanced = true
+        
+        if !showResult {
+            guard let question = currentQuestion,
+                  let firstChoice = question.choices.first else { return }
+            
             Task {
                 let _ = await viewModel.submitAnswer(
                     questionId: question.id,
@@ -289,19 +317,273 @@ struct QuizView: View {
                 earnedPoints = 0
             }
         }
+        
+        Task {
+            // Espera 1.5 segundos
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            
+            // Si NO es la última pregunta, muestra ranking
+            if !isLastQuestion {
+                showIntermediateRanking = true
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 segundos
+            }
+            
+            // Avanza
+            if isHost {
+                if !isLastQuestion {
+                    await viewModel.nextQuestion()
+                } else {
+                    await viewModel.finishQuiz()
+                }
+            }
+            
+            showIntermediateRanking = false
+        }
+    }
+}
+
+// MARK: - Timer Circle Component
+struct TimerCircle: View {
+    let timeRemaining: Int
+    let totalTime: Int
+    
+    private var progress: Double {
+        guard totalTime > 0 else { return 0 }
+        return Double(timeRemaining) / Double(totalTime)
     }
     
-    func advanceToNextQuestion() {
-        if currentQuestionIndex < viewModel.questions.count - 1 {
-            Task {
-                await viewModel.nextQuestion()
-            }
-        } else {
-            // Finish quiz
-            Task {
-                await viewModel.finishQuiz()
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.gray.opacity(0.2), lineWidth: 8)
+                .frame(width: 80, height: 80)
+            
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(
+                    timeRemaining > 5 ? Color.green : Color.red,
+                    style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                )
+                .frame(width: 80, height: 80)
+                .rotationEffect(.degrees(-90))
+            
+            Text("\(timeRemaining)")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .contentTransition(.numericText())
+        }
+        .frame(width: 80, height: 80)
+    }
+}
+
+// MARK: - Player Answer Bubbles
+struct PlayerAnswerBubbles: View {
+    let players: [Player]
+    
+    var body: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(players) { player in
+                Circle()
+                    .fill(player.is_host ? Color.blue : Color.purple)
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        Text(String(player.name.prefix(1)).uppercased())
+                            .font(.headline.bold())
+                            .foregroundColor(.white)
+                    }
+                    .transition(.scale.combined(with: .opacity))
             }
         }
+        .animation(.spring(response: 0.5, dampingFraction: 0.7), value: players.count)
+        .padding(.horizontal)
+    }
+}
+
+// MARK: - Flow Layout
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = FlowResult(
+            in: proposal.replacingUnspecifiedDimensions().width,
+            subviews: subviews,
+            spacing: spacing
+        )
+        return result.size
+    }
+    
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = FlowResult(
+            in: bounds.width,
+            subviews: subviews,
+            spacing: spacing
+        )
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + result.positions[index].x,
+                                     y: bounds.minY + result.positions[index].y),
+                         proposal: .unspecified)
+        }
+    }
+    
+    struct FlowResult {
+        var size: CGSize
+        var positions: [CGPoint]
+        
+        init(in maxWidth: CGFloat, subviews: Subviews, spacing: CGFloat) {
+            var positions: [CGPoint] = []
+            var currentX: CGFloat = 0
+            var currentY: CGFloat = 0
+            var lineHeight: CGFloat = 0
+            
+            for subview in subviews {
+                let size = subview.sizeThatFits(.unspecified)
+                
+                if currentX + size.width > maxWidth && currentX > 0 {
+                    currentX = 0
+                    currentY += lineHeight + spacing
+                    lineHeight = 0
+                }
+                
+                positions.append(CGPoint(x: currentX, y: currentY))
+                currentX += size.width + spacing
+                lineHeight = max(lineHeight, size.height)
+            }
+            
+            self.positions = positions
+            self.size = CGSize(width: maxWidth, height: currentY + lineHeight)
+        }
+    }
+}
+
+// MARK: - Intermediate Ranking View
+struct IntermediateRankingView: View {
+    let leaderboard: [LeaderboardEntry]
+    
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color.blue.opacity(0.2), Color.purple.opacity(0.2)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            VStack(spacing: 24) {
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 50))
+                        .foregroundColor(.blue)
+                    
+                    Text("Current Rankings")
+                        .font(.title.bold())
+                }
+                .padding(.top, 40)
+                
+                // Rankings with animation
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(leaderboard) { entry in
+                            AnimatedRankingRow(entry: entry)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .move(edge: .leading).combined(with: .opacity)
+                                ))
+                                .id(entry.id) // Force view update on rank change
+                        }
+                    }
+                    .padding(.horizontal)
+                    .animation(.spring(response: 0.6, dampingFraction: 0.7), value: leaderboard.map { $0.rank })
+                }
+                
+                Spacer()
+            }
+        }
+    }
+}
+
+// MARK: - Animated Ranking Row
+struct AnimatedRankingRow: View {
+    let entry: LeaderboardEntry
+    
+    var rankColor: Color {
+        switch entry.rank {
+        case 1: return .yellow
+        case 2: return .gray
+        case 3: return .orange
+        default: return .blue
+        }
+    }
+    
+    var avatarColor: Color {
+        switch entry.avatarColor {
+        case "blue": return .blue
+        case "purple": return .purple
+        case "green": return .green
+        case "orange": return .orange
+        case "pink": return .pink
+        case "red": return .red
+        case "yellow": return .yellow
+        case "cyan": return .cyan
+        default: return .blue
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            // Rank
+            Text("#\(entry.rank)")
+                .font(.title2.bold())
+                .foregroundColor(rankColor)
+                .frame(width: 50)
+                .animation(.spring(response: 0.5, dampingFraction: 0.7), value: entry.rank)
+            
+            // Avatar
+            Circle()
+                .fill(avatarColor)
+                .frame(width: 45, height: 45)
+                .overlay {
+                    Text(String(entry.playerName.prefix(1)).uppercased())
+                        .font(.headline.bold())
+                        .foregroundColor(.white)
+                }
+            
+            // Name
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.playerName)
+                    .font(.headline)
+                    .foregroundColor(entry.isCurrentUser ? .blue : .primary)
+                    .lineLimit(1)
+                
+                if entry.isCurrentUser {
+                    Text("You")
+                        .font(.caption2)
+                        .foregroundColor(.blue)
+                }
+            }
+            
+            Spacer()
+            
+            // Score with animation
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("\(entry.score)")
+                    .font(.title3.bold())
+                    .foregroundColor(.primary)
+                    .contentTransition(.numericText())
+                    .animation(.spring(response: 0.5, dampingFraction: 0.7), value: entry.score)
+                
+                Text("pts")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(entry.isCurrentUser ? Color.blue.opacity(0.1) : Color.white)
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(entry.isCurrentUser ? Color.blue : Color.clear, lineWidth: 2)
+        )
     }
 }
 
@@ -342,25 +624,29 @@ struct ChoiceButton: View {
     
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(alignment: .top, spacing: 12) {
                 Text(choice.label)
                     .font(.body)
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 
-                Spacer()
+                Spacer(minLength: 8)
                 
                 if showResult {
                     if choice.is_correct {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green)
+                            .font(.title3)
                     } else if isSelected {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.red)
+                            .font(.title3)
                     }
                 }
             }
             .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(backgroundColor)
             .cornerRadius(12)
             .overlay(
